@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply font-sans;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.3);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(75, 85, 99, 0.5);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.5);
+}
+
+/* Glassmorphism Panels */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.dark .glass-panel {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Card Styling */
+.card-theme {
+  @apply bg-card-light dark:bg-card-dark border border-slate-200/50 dark:border-slate-800/50 shadow-soft;
+}
+
+/* Soft Shadows */
+.shadow-soft {
+  box-shadow: 0 4px 30px -4px rgba(15, 23, 42, 0.05);
+}
+
+.dark .shadow-soft {
+  box-shadow: 0 8px 30px -4px rgba(0, 0, 0, 0.4);
+}
+
+/* Active Highlight Glow Animations */
+@keyframes glow-pulse {
+  0% {
+    box-shadow: 0 0 4px rgba(20, 184, 166, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 16px rgba(20, 184, 166, 0.6);
+  }
+}
+
+.glow-active {
+  animation: glow-pulse 1.5s infinite alternate;
+}
