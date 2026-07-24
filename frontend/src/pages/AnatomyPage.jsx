@@ -1,15 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ModelViewer from '@three/ModelViewer';
-import { 
-  Search, 
-  BrainCircuit, 
-  HelpCircle,
-  Flame,
-  Loader2,
-  AlertCircle,
-  ArrowLeft
-} from 'lucide-react';
+import HeartViewer from '@three/HeartViewer';
+import ViewerToolbar from '@components/ViewerToolbar';
+import AnatomySidebar from '@components/AnatomySidebar';
+import InformationPanel from '@components/InformationPanel';
+import { Menu, FileText } from 'lucide-react';
 import { useSelectedMesh } from '@contexts/SelectedMeshContext';
 import { fetchAIExplanation } from '@services/aiService';
 import { useSpeech } from '@hooks/useSpeech';
@@ -70,14 +65,27 @@ const HEART_DETAILS = {
 
 const AnatomyPage = () => {
   const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState('');
   const { 
     selectedMeshInfo, 
     selectMesh, 
-    availableMeshes, 
-    explosionFactor, 
-    setExplosionFactor 
+    availableMeshes,
+    clearSelection,
+    explosionFactor,
+    setExplosionFactor
   } = useSelectedMesh();
+
+  // Search and mobile view toggles
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isLeftOpen, setIsLeftOpen] = useState(false);
+  const [isRightOpen, setIsRightOpen] = useState(false);
+
+  // R3F Viewer option states
+  const [wireframe, setWireframe] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const [autoRotate, setAutoRotate] = useState(false);
+  const [resetTrigger, setResetTrigger] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef();
 
   // AI Diagnostic states
   const [activeSource, setActiveSource] = useState('static'); // 'static' | 'ai'
@@ -85,7 +93,7 @@ const AnatomyPage = () => {
   const [aiError, setAiError] = useState(null);
   const [aiExplanation, setAiExplanation] = useState(null);
 
-  // Speech Narrator Custom Hook
+  // Speech synthesis custom hook
   const {
     voices,
     selectedVoiceName,
@@ -100,16 +108,16 @@ const AnatomyPage = () => {
     stop
   } = useSpeech();
 
-  // Reset AI and stop narrator when selection changes
+  // Listen to selection updates and log completed lessons
   useEffect(() => {
     setActiveSource('static');
     setAiExplanation(null);
     setAiError(null);
     stop();
-  }, [selectedMeshInfo]);
+    
+    setIsLeftOpen(false);
+    setIsRightOpen(false);
 
-  // Log lesson completion to database when a structure is selected
-  useEffect(() => {
     if (selectedMeshInfo?.name) {
       completeLesson(selectedMeshInfo.name).catch((err) =>
         console.error('Failed to log completed lesson:', err.message)
@@ -117,53 +125,98 @@ const AnatomyPage = () => {
     }
   }, [selectedMeshInfo]);
 
-  const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    const query = searchQuery.trim().toLowerCase();
-    
-    // Find matching mesh in our dynamically discovered list
-    const found = availableMeshes.find(
-      m => m.name.toLowerCase() === query || 
-           m.name.toLowerCase().replace(/_/g, ' ') === query ||
-           m.name.toLowerCase().replace(/ /g, '_') === query
-    );
+  useEffect(() => {
+    return () => stop();
+  }, []);
 
-    if (found) {
-      selectMesh(found);
+  // Sync fullscreen state
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen()
+        .then(() => setIsFullscreen(true))
+        .catch(err => console.error(`Error entering fullscreen: ${err.message}`));
     } else {
-      alert(`Structure "${searchQuery}" not found. Try: Aorta, Left Ventricle, Pulmonary Artery`);
+      document.exitFullscreen()
+        .then(() => setIsFullscreen(false))
+        .catch(err => console.error(`Error exiting fullscreen: ${err.message}`));
     }
   };
 
-  // Explode / Assemble GSAP actions
-  const handleExplode = () => {
-    const tempObj = { value: explosionFactor };
-    gsap.to(tempObj, {
-      value: 1.0,
-      duration: 0.8,
-      ease: 'power2.out',
-      onUpdate: () => setExplosionFactor(tempObj.value)
+  // UNIFIED POSITION CONTROLLERS (Sole components managing mesh position)
+  
+  // Slider change direct assignment (no delay, no conflicting useEffect loops)
+  const handleSliderChange = (val) => {
+    setExplosionFactor(val);
+    if (!availableMeshes) return;
+    availableMeshes.forEach(item => {
+      const { mesh, originalPos, direction } = item;
+      if (mesh && originalPos && direction) {
+        gsap.killTweensOf(mesh.position);
+        mesh.position.copy(originalPos).addScaledVector(direction, val * 1.5);
+      }
     });
   };
 
-  const handleAssemble = () => {
+  // Button transitions using GSAP
+  const animateExplosion = (targetVal) => {
+    if (!availableMeshes || !availableMeshes.length) return;
+
+    // Animate slider value
     const tempObj = { value: explosionFactor };
     gsap.to(tempObj, {
-      value: 0.0,
-      duration: 0.8,
-      ease: 'power2.out',
+      value: targetVal,
+      duration: 1.2,
+      ease: 'power2.inOut',
       onUpdate: () => setExplosionFactor(tempObj.value)
+    });
+
+    // Animate mesh positions
+    availableMeshes.forEach(item => {
+      const { mesh, originalPos, direction } = item;
+      if (mesh && originalPos && direction) {
+        gsap.killTweensOf(mesh.position);
+        const targetPos = originalPos.clone().addScaledVector(direction, targetVal * 1.5);
+        
+        gsap.to(mesh.position, {
+          x: targetPos.x,
+          y: targetPos.y,
+          z: targetPos.z,
+          duration: 1.2,
+          ease: 'power2.inOut',
+          onComplete: () => {
+            if (targetVal === 0) {
+              mesh.position.copy(originalPos); // Zero-drift copy lock
+            }
+          }
+        });
+      }
     });
   };
 
-  // Trigger backend AI analysis
+  const handleExplode = () => animateExplosion(1.0);
+  const handleAssemble = () => animateExplosion(0.0);
+  const handleReset = () => {
+    clearSelection();
+    setResetTrigger(prev => prev + 1);
+  };
+
   const handleAIDeepDive = async () => {
     if (!selectedMeshInfo) return;
     
     setAiLoading(true);
     setAiError(null);
     setActiveSource('ai');
-    stop(); // stop any current narration
+    stop();
 
     try {
       const data = await fetchAIExplanation(selectedMeshInfo.name);
@@ -179,7 +232,6 @@ const AnatomyPage = () => {
     }
   };
 
-  // Narrator Speech Trigger
   const handleStartSpeaking = () => {
     const textToSpeak = activeSource === 'ai' && aiExplanation
       ? `${aiExplanation.name || selectedMeshInfo.name}. Description: ${aiExplanation.description || ''}. Function: ${aiExplanation.function || ''}. Clinical Significance: ${aiExplanation.clinicalImportance || ''}`
@@ -188,7 +240,7 @@ const AnatomyPage = () => {
     speak(textToSpeak);
   };
 
-  // Simple Markdown Formatter Helper
+  // Inline markdown renderer helper
   const formatInlineMarkdown = (text) => {
     if (!text) return '';
     const parts = text.split(/(\*\*.*?\*\*)/g);
@@ -212,7 +264,7 @@ const AnatomyPage = () => {
       if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
         const itemContent = trimmed.replace(/^[-*]\s+/, '');
         currentList.push(
-          <li key={`li-${idx}`} className="text-slate-650 dark:text-slate-400">
+          <li key={`li-${idx}`} className="text-slate-655 dark:text-slate-400">
             {formatInlineMarkdown(itemContent)}
           </li>
         );
@@ -228,7 +280,7 @@ const AnatomyPage = () => {
 
         if (trimmed) {
           renderedElements.push(
-            <p key={`p-${idx}`} className="mb-2 text-slate-650 dark:text-slate-400 leading-relaxed font-sans">
+            <p key={`p-${idx}`} className="mb-2 text-slate-655 dark:text-slate-400 leading-relaxed font-sans">
               {formatInlineMarkdown(trimmed)}
             </p>
           );
@@ -272,281 +324,93 @@ const AnatomyPage = () => {
   }
 
   return (
-    <div className="grid lg:grid-cols-12 gap-8 h-[calc(100vh-10rem)] font-sans relative">
-      {/* 3D Canvas Area */}
-      <div className="lg:col-span-8 flex flex-col gap-4 h-full">
-        <div className="flex-1 min-h-[350px]">
-          <ModelViewer model="heart" />
+    <div className="flex h-[calc(100vh-6rem)] gap-6 overflow-hidden relative font-sans text-slate-800 dark:text-slate-100">
+      
+      {/* LEFT SIDEBAR (25%) */}
+      <AnatomySidebar isLeftOpen={isLeftOpen} onClose={() => setIsLeftOpen(false)} />
+
+      {/* CENTER VIEWPORT CONTAINER (55%) */}
+      <main ref={containerRef} className="flex-1 h-full flex flex-col relative min-w-0">
+        
+        {/* Mobile Viewport drawers toggles */}
+        <div className="absolute top-4 right-4 flex gap-2 z-20 lg:hidden">
+          <button
+            onClick={() => {
+              setIsLeftOpen(prev => !prev);
+              setIsRightOpen(false);
+            }}
+            className="p-2.5 rounded-xl bg-slate-900/80 backdrop-blur-md border border-white/10 text-white shadow-lg flex items-center gap-1.5"
+          >
+            <Menu size={16} />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Parts</span>
+          </button>
+          <button
+            onClick={() => {
+              setIsRightOpen(prev => !prev);
+              setIsLeftOpen(false);
+            }}
+            className="p-2.5 rounded-xl bg-slate-900/80 backdrop-blur-md border border-white/10 text-white shadow-lg flex items-center gap-1.5"
+          >
+            <FileText size={16} />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Info</span>
+          </button>
         </div>
 
-        {/* Explosion control panel */}
-        <div className="card-theme p-5 rounded-2xl flex flex-col gap-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-2 text-slate-700 dark:text-slate-350">
-              <Flame size={16} className="text-primary animate-pulse" />
-              <span className="text-sm font-bold">
-                Exploded View
-              </span>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleExplode}
-                className="px-4 py-1.5 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary-dark text-xs font-bold transition-all"
-              >
-                Explode
-              </button>
-              <button
-                onClick={handleAssemble}
-                className="px-4 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-bold transition-all"
-              >
-                Assemble
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <input 
-              type="range" 
-              min="0" 
-              max="1" 
-              step="0.01"
-              value={explosionFactor}
-              onChange={(e) => setExplosionFactor(parseFloat(e.target.value))}
-              className="flex-1 accent-primary h-1.5 bg-slate-200 dark:bg-slate-855 rounded-lg appearance-none cursor-pointer"
-            />
-            <span className="text-xs font-mono font-bold text-slate-500 w-10 text-right">
-              {Math.round(explosionFactor * 100)}%
-            </span>
-          </div>
+        {/* 3D Heart Canvas */}
+        <div className="flex-1 w-full h-full relative">
+          <HeartViewer
+            wireframe={wireframe}
+            resetTrigger={resetTrigger}
+            autoRotate={autoRotate}
+            showGrid={showGrid}
+          />
+
+          {/* Floating Viewer Toolbar */}
+          <ViewerToolbar
+            autoRotate={autoRotate}
+            setAutoRotate={setAutoRotate}
+            wireframe={wireframe}
+            setWireframe={setWireframe}
+            showGrid={showGrid}
+            setShowGrid={setShowGrid}
+            handleReset={handleReset}
+            toggleFullscreen={toggleFullscreen}
+            isFullscreen={isFullscreen}
+            explosionFactor={explosionFactor}
+            handleSliderChange={handleSliderChange}
+            handleExplode={handleExplode}
+            handleAssemble={handleAssemble}
+          />
         </div>
-      </div>
+      </main>
 
-      {/* Information Panel Area */}
-      <div className="lg:col-span-4 flex flex-col gap-6 h-full overflow-y-auto pr-2">
-        {/* Anatomical search */}
-        <div className="card-theme p-4 rounded-2xl">
-          <form onSubmit={handleSearchSubmit} className="relative">
-            <Search className="absolute left-3.5 top-3.5 text-slate-400" size={18} />
-            <input 
-              type="text"
-              placeholder="Search structure (e.g. Aorta)..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl py-3 pl-11 pr-4 text-sm text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:border-primary transition-colors"
-            />
-          </form>
-        </div>
+      {/* RIGHT INFORMATION PANEL (20%) */}
+      <InformationPanel
+        selectedMeshInfo={selectedMeshInfo}
+        activeSource={activeSource}
+        setActiveSource={setActiveSource}
+        aiLoading={aiLoading}
+        aiError={aiError}
+        aiExplanation={aiExplanation}
+        activeDetails={activeDetails}
+        handleAIDeepDive={handleAIDeepDive}
+        handleStartSpeaking={handleStartSpeaking}
+        isPlaying={isPlaying}
+        isPaused={isPaused}
+        resume={resume}
+        pause={pause}
+        stop={stop}
+        voices={voices}
+        selectedVoiceName={selectedVoiceName}
+        setSelectedVoiceName={setSelectedVoiceName}
+        rate={rate}
+        setRate={setRate}
+        renderMarkdown={renderMarkdown}
+        isRightOpen={isRightOpen}
+        onClose={() => setIsRightOpen(false)}
+        navigate={navigate}
+      />
 
-        {/* Structure Info Card */}
-        <div className="card-theme p-6 rounded-2xl flex-1 flex flex-col justify-between min-h-[300px]">
-          <div>
-            {/* Header */}
-            <div className="flex justify-between items-start border-b border-slate-100 dark:border-slate-800 pb-4 mb-4">
-              <div>
-                <span className="text-xs font-semibold text-primary uppercase tracking-widest">
-                  {activeSource === 'ai' ? 'AI Diagnostic Report' : selectedMeshInfo ? 'Selected Structure' : 'General Guide'}
-                </span>
-                <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-1">
-                  {activeSource === 'ai' ? aiExplanation?.name || selectedMeshInfo?.name : activeDetails.name}
-                </h3>
-              </div>
-            </div>
-
-            {/* Speech synthesis controller inside Information Panel */}
-            {selectedMeshInfo && !aiLoading && !aiError && (
-              <div className="mb-6 p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800/80 space-y-3.5 shadow-sm">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                    Narrator Settings
-                  </span>
-                  {isPlaying && (
-                    <span className="flex h-1.5 w-1.5 rounded-full bg-accent animate-ping" />
-                  )}
-                </div>
-
-                <div className="flex gap-2">
-                  {!isPlaying ? (
-                    <button
-                      onClick={handleStartSpeaking}
-                      className="flex-1 py-2 px-3 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-bold transition-all shadow-md shadow-primary/10"
-                    >
-                      Speak
-                    </button>
-                  ) : isPaused ? (
-                    <button
-                      onClick={resume}
-                      className="flex-1 py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold transition-all"
-                    >
-                      Resume
-                    </button>
-                  ) : (
-                    <button
-                      onClick={pause}
-                      className="flex-1 py-2 px-3 rounded-xl bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-bold transition-all"
-                    >
-                      Pause
-                    </button>
-                  )}
-
-                  {isPlaying && (
-                    <button
-                      onClick={stop}
-                      className="py-2 px-4 rounded-xl bg-red-500 hover:bg-red-655 text-white text-xs font-bold transition-all"
-                    >
-                      Stop
-                    </button>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3.5 pt-3 border-t border-slate-200/50 dark:border-slate-800/50">
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Voice Actor</label>
-                    <select
-                      value={selectedVoiceName}
-                      onChange={(e) => setSelectedVoiceName(e.target.value)}
-                      className="w-full text-[10px] bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-lg p-1.5 focus:outline-none"
-                    >
-                      {voices.map((voice) => (
-                        <option key={voice.name} value={voice.name}>
-                          {voice.name.split(' - ')[0]} ({voice.lang})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                      <span>Rate speed</span>
-                      <span className="font-mono font-bold text-primary">{rate.toFixed(1)}x</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.6"
-                      max="1.8"
-                      step="0.1"
-                      value={rate}
-                      onChange={(e) => setRate(parseFloat(e.target.value))}
-                      className="w-full accent-primary h-1 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer mt-1"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Body Content */}
-            <div className="overflow-y-auto max-h-[40vh] pr-1">
-              {activeSource === 'ai' ? (
-                // AI State Render
-                aiLoading ? (
-                  <div className="flex flex-col items-center justify-center h-48 space-y-4">
-                    <Loader2 className="h-10 w-10 text-primary animate-spin" />
-                    <p className="text-xs text-slate-400 font-bold tracking-wider uppercase animate-pulse">
-                      Querying Gemini API...
-                    </p>
-                  </div>
-                ) : aiError ? (
-                  <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <AlertCircle size={18} />
-                      <span className="font-bold text-sm">Service Error</span>
-                    </div>
-                    <p className="text-xs leading-relaxed">{aiError}</p>
-                    <button
-                      onClick={handleAIDeepDive}
-                      className="px-3.5 py-1.5 rounded-lg bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-colors"
-                    >
-                      Retry Query
-                  </button>
-                </div>
-              ) : aiExplanation ? (
-                <div className="space-y-4 text-sm leading-relaxed font-sans">
-                  <div>
-                    <h4 className="font-semibold text-slate-700 dark:text-slate-350 uppercase tracking-wider text-xs mb-1">Description</h4>
-                    <div className="text-slate-655 dark:text-slate-400">{renderMarkdown(aiExplanation.description)}</div>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-slate-700 dark:text-slate-350 uppercase tracking-wider text-xs mb-1">Biological Function</h4>
-                    <div className="text-slate-655 dark:text-slate-400">{renderMarkdown(aiExplanation.function)}</div>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-slate-700 dark:text-slate-350 uppercase tracking-wider text-xs mb-1">Clinical Significance</h4>
-                    <div className="text-slate-655 dark:text-slate-400">{renderMarkdown(aiExplanation.clinicalImportance)}</div>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-slate-700 dark:text-slate-350 uppercase tracking-wider text-xs mb-1">Associated Pathologies</h4>
-                    <div className="text-slate-655 dark:text-slate-400">{renderMarkdown(aiExplanation.diseases)}</div>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-slate-700 dark:text-slate-350 uppercase tracking-wider text-xs mb-1">Anatomical Trivia</h4>
-                    <div className="text-slate-655 dark:text-slate-400 italic">"{renderMarkdown(aiExplanation.facts)}"</div>
-                  </div>
-                </div>
-              ) : null
-            ) : (
-              // Static State Render
-              <div className="space-y-4 text-sm leading-relaxed">
-                <div>
-                  <h4 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-xs mb-1">Description</h4>
-                  <p className="text-slate-600 dark:text-slate-400">{activeDetails.description}</p>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-xs mb-1">
-                    {selectedMeshInfo ? 'Biological Function' : 'How to Navigate'}
-                  </h4>
-                  <p className="text-slate-600 dark:text-slate-400">{activeDetails.function}</p>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-xs mb-1">
-                    {selectedMeshInfo ? 'Clinical Importance' : 'Learning Resources'}
-                  </h4>
-                  <p className="text-slate-600 dark:text-slate-400">{activeDetails.clinical}</p>
-                </div>
-                <div>
-                  <h4 className="font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-xs mb-1">
-                    {selectedMeshInfo ? 'Dynamic Fact' : 'Quick Tip'}
-                  </h4>
-                  <p className="text-slate-600 dark:text-slate-400 italic">"{activeDetails.facts}"</p>
-                </div>
-              </div>
-            )}
-          </div>
-          </div>
-
-          {/* Action Callouts */}
-          <div className="flex gap-3 pt-4 border-t border-slate-100 dark:border-slate-800 mt-4">
-            {activeSource === 'ai' ? (
-              <button 
-                onClick={() => {
-                  stop();
-                  setActiveSource('static');
-                }}
-                className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors"
-              >
-                <ArrowLeft size={14} />
-                Return to Guide
-              </button>
-            ) : (
-              <button 
-                onClick={handleAIDeepDive}
-                disabled={!selectedMeshInfo}
-                className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-xs font-bold transition-all ${
-                  selectedMeshInfo 
-                    ? 'bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary-dark cursor-pointer' 
-                    : 'bg-slate-100 dark:bg-slate-900 text-slate-400 dark:text-slate-700 cursor-not-allowed opacity-50'
-                }`}
-              >
-                <BrainCircuit size={14} />
-                AI Deep Dive
-              </button>
-            )}
-            <button 
-              onClick={() => navigate('/dashboard/quiz')}
-              className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-accent/10 hover:bg-accent/20 text-accent dark:text-accent-dark text-xs font-bold transition-colors cursor-pointer"
-            >
-              <HelpCircle size={14} />
-              Quiz Me
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

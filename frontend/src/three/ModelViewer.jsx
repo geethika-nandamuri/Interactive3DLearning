@@ -16,7 +16,8 @@ import {
   RefreshCcw, 
   Maximize2, 
   Minimize2,
-  Box
+  Box,
+  Flame
 } from 'lucide-react';
 import * as THREE from 'three';
 import gsap from 'gsap';
@@ -49,16 +50,14 @@ function CameraController({ resetTrigger }) {
   
   useEffect(() => {
     if (resetTrigger > 0) {
-      // Smoothly animate camera position back to default view
       gsap.to(camera.position, {
         x: 0,
         y: 0,
-        z: 5,
+        z: 4,
         duration: 0.8,
         ease: 'power2.out'
       });
 
-      // Smoothly animate orbit control target back to center
       if (controls) {
         gsap.to(controls.target, {
           x: 0,
@@ -76,7 +75,7 @@ function CameraController({ resetTrigger }) {
 }
 
 // Inner model loader that handles mesh traversals, hover glows, selections, and camera zooms
-function ModelLoader({ modelName, wireframe }) {
+function ModelLoader({ modelName, wireframe, originalPositionsRef, isAnimating }) {
   const modelPath = `/models/${modelName}.glb`;
   const { scene } = useGLTF(modelPath);
   const { camera, controls } = useThree();
@@ -92,13 +91,16 @@ function ModelLoader({ modelName, wireframe }) {
     const meshesList = [];
     const geometryCenters = [];
 
-    // First pass: collect geometry centers of all meshes in local coordinates
     scene.traverse((child) => {
       if (child.isMesh) {
         child.castShadow = true;
         child.receiveShadow = true;
         
-        // Save clones of color and emissive parameters
+        // Cache original position strictly once
+        if (!originalPositionsRef.current.has(child.uuid)) {
+          originalPositionsRef.current.set(child.uuid, child.position.clone());
+        }
+
         if (child.material) {
           originalMaterialsRef.current.set(child.uuid, {
             color: child.material.color ? child.material.color.clone() : new THREE.Color(1, 1, 1),
@@ -108,7 +110,6 @@ function ModelLoader({ modelName, wireframe }) {
           child.material.wireframe = wireframe;
         }
 
-        // Calculate center of geometry in local space
         const geomCenter = new THREE.Vector3();
         if (child.geometry) {
           if (!child.geometry.boundingBox) {
@@ -134,19 +135,16 @@ function ModelLoader({ modelName, wireframe }) {
       setHasMeshes(true);
     }
 
-    // Calculate model center in local space by averaging geometry centers
     const localModelCenter = new THREE.Vector3();
     if (geometryCenters.length > 0) {
       geometryCenters.forEach(gc => localModelCenter.add(gc.geomCenter));
       localModelCenter.divideScalar(geometryCenters.length);
     }
 
-    // Second pass: calculate directions relative to localModelCenter and store mesh info
     geometryCenters.forEach(({ mesh, geomCenter }) => {
-      const originalPos = mesh.position ? mesh.position.clone() : new THREE.Vector3(0, 0, 0);
+      const originalPos = originalPositionsRef.current.get(mesh.uuid) || mesh.position.clone();
       const direction = new THREE.Vector3().subVectors(geomCenter, localModelCenter).normalize();
       
-      // Prevent division by zero / overlapping vectors
       if (direction.lengthSq() < 0.01) {
         direction.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
       }
@@ -174,45 +172,26 @@ function ModelLoader({ modelName, wireframe }) {
     setAvailableMeshes(meshesList);
   }, [scene, wireframe, setAvailableMeshes]);
 
-  // Listen to explosion factor slider changes
+  // Sync slider drag directly when not running button animations
   useEffect(() => {
+    if (isAnimating) return; // Do not overwrite active button animations!
     if (!availableMeshes || !availableMeshes.length) return;
 
     availableMeshes.forEach((item) => {
       const { mesh, originalPos, direction } = item;
       if (!mesh || !originalPos || !direction) return;
       
-      // Calculate target position based on explosion factor
       const targetPos = originalPos.clone().add(
         direction.clone().multiplyScalar(explosionFactor * 1.5)
       );
-
-      gsap.to(mesh.position, {
-        x: targetPos.x,
-        y: targetPos.y,
-        z: targetPos.z,
-        duration: 0.6,
-        ease: 'power2.out',
-        overwrite: 'auto'
-      });
+      mesh.position.copy(targetPos);
     });
-  }, [explosionFactor, availableMeshes]);
-
-  if (!hasMeshes) {
-    return (
-      <Html center>
-        <div className="flex flex-col items-center justify-center p-6 bg-slate-900/85 backdrop-blur-md border border-white/10 rounded-2xl shadow-2xl w-48 text-center select-none font-sans">
-          <p className="text-sm font-bold text-red-400">No meshes found</p>
-        </div>
-      </Html>
-    );
-  }
+  }, [explosionFactor, availableMeshes, isAnimating]);
 
   // Handle highlights when selection context updates
   useEffect(() => {
     if (!scene) return;
 
-    // Reset all materials back to original states
     originalMaterialsRef.current.forEach((original, uuid) => {
       const child = scene.getObjectByProperty('uuid', uuid);
       if (child && child.material) {
@@ -221,7 +200,6 @@ function ModelLoader({ modelName, wireframe }) {
       }
     });
 
-    // Apply glowing highlights to active selection
     if (selectedMeshInfo?.mesh) {
       const selectedMesh = selectedMeshInfo.mesh;
       const matchedObject = scene.getObjectByProperty('uuid', selectedMesh.uuid);
@@ -230,7 +208,6 @@ function ModelLoader({ modelName, wireframe }) {
         if (!matchedObject.material.emissive) {
           matchedObject.material.emissive = new THREE.Color(0, 0, 0);
         }
-        // Set glowing emissive active highlight (Teal Accent)
         matchedObject.material.emissive.set('#14B8A6');
         matchedObject.material.emissiveIntensity = 0.9;
       }
@@ -276,12 +253,11 @@ function ModelLoader({ modelName, wireframe }) {
     if (mesh.isMesh) {
       document.body.style.cursor = 'pointer';
       
-      // Apply temporary soft hover glow if it is not selected
       if (selectedMeshInfo?.mesh?.uuid !== mesh.uuid && mesh.material) {
         if (!mesh.material.emissive) {
           mesh.material.emissive = new THREE.Color(0, 0, 0);
         }
-        mesh.material.emissive.set('#2563EB'); // Blue hover theme glow
+        mesh.material.emissive.set('#2563EB');
         mesh.material.emissiveIntensity = 0.5;
       }
     }
@@ -293,7 +269,6 @@ function ModelLoader({ modelName, wireframe }) {
     if (mesh.isMesh) {
       document.body.style.cursor = 'default';
       
-      // Restore material emissive if it is not selected
       if (selectedMeshInfo?.mesh?.uuid !== mesh.uuid && mesh.material) {
         const original = originalMaterialsRef.current.get(mesh.uuid);
         if (original) {
@@ -327,10 +302,21 @@ function ModelLoader({ modelName, wireframe }) {
     }
   };
 
+  if (!hasMeshes) {
+    return (
+      <Html center>
+        <div className="flex flex-col items-center justify-center p-6 bg-slate-900/85 backdrop-blur-md border border-white/10 rounded-2xl shadow-2xl w-48 text-center select-none font-sans">
+          <p className="text-sm font-bold text-red-400">No meshes found</p>
+        </div>
+      </Html>
+    );
+  }
+
   return (
     <Center>
       <primitive 
         object={scene} 
+        scale={2.6}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
         onPointerDown={handlePointerDown}
@@ -342,16 +328,22 @@ function ModelLoader({ modelName, wireframe }) {
 // Exported Reusable ModelViewer Component
 export default function ModelViewer({ model = 'heart' }) {
   const containerRef = useRef();
-  const { clearSelection } = useSelectedMesh();
+  const originalPositionsRef = useRef(new Map());
+  const [isAnimating, setIsAnimating] = useState(false);
   
-  // Viewer Option States
+  const { 
+    clearSelection, 
+    availableMeshes, 
+    explosionFactor, 
+    setExplosionFactor 
+  } = useSelectedMesh();
+  
   const [autoRotate, setAutoRotate] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [resetTrigger, setResetTrigger] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Sync fullscreen state changes
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(document.fullscreenElement === containerRef.current);
@@ -379,6 +371,91 @@ export default function ModelViewer({ model = 'heart' }) {
     }
   };
 
+  // Explode animation using GSAP
+  const handleExplode = () => {
+    if (!availableMeshes || !availableMeshes.length) return;
+
+    // Cancel active tweens to prevent conflicts
+    availableMeshes.forEach(item => {
+      if (item.mesh) gsap.killTweensOf(item.mesh.position);
+    });
+
+    setIsAnimating(true);
+
+    // Tween the explosionFactor state in parallel
+    const tempObj = { value: explosionFactor };
+    gsap.to(tempObj, {
+      value: 1.0,
+      duration: 1.2,
+      ease: 'power2.inOut',
+      onUpdate: () => setExplosionFactor(tempObj.value)
+    });
+
+    // Animate every mesh outward
+    let completedCount = 0;
+    availableMeshes.forEach((item) => {
+      const { mesh, originalPos, direction } = item;
+      const targetPos = originalPos.clone().add(
+        direction.clone().multiplyScalar(1.5)
+      );
+
+      gsap.to(mesh.position, {
+        x: targetPos.x,
+        y: targetPos.y,
+        z: targetPos.z,
+        duration: 1.2,
+        ease: 'power2.inOut',
+        onComplete: () => {
+          completedCount++;
+          if (completedCount === availableMeshes.length) {
+            setIsAnimating(false);
+          }
+        }
+      });
+    });
+  };
+
+  // Assemble animation returning meshes back to exact stored positions
+  const handleAssemble = () => {
+    if (!availableMeshes || !availableMeshes.length) return;
+
+    availableMeshes.forEach(item => {
+      if (item.mesh) gsap.killTweensOf(item.mesh.position);
+    });
+
+    setIsAnimating(true);
+
+    const tempObj = { value: explosionFactor };
+    gsap.to(tempObj, {
+      value: 0.0,
+      duration: 1.2,
+      ease: 'power2.inOut',
+      onUpdate: () => setExplosionFactor(tempObj.value)
+    });
+
+    let completedCount = 0;
+    availableMeshes.forEach((item) => {
+      const { mesh, originalPos } = item;
+
+      // Animate back to exact stored original positions
+      gsap.to(mesh.position, {
+        x: originalPos.x,
+        y: originalPos.y,
+        z: originalPos.z,
+        duration: 1.2,
+        ease: 'power2.inOut',
+        onComplete: () => {
+          completedCount++;
+          if (completedCount === availableMeshes.length) {
+            setIsAnimating(false);
+            // Lock position directly to prevent drifting
+            mesh.position.copy(originalPos);
+          }
+        }
+      });
+    });
+  };
+
   return (
     <div 
       ref={containerRef} 
@@ -388,10 +465,9 @@ export default function ModelViewer({ model = 'heart' }) {
       <div className="absolute inset-0 z-0">
         <Canvas
           shadows
-          camera={{ position: [0, 0, 5], fov: 45 }}
+          camera={{ position: [0, 0, 4], fov: 45 }}
           gl={{ antialias: true, preserveDrawingBuffer: true }}
         >
-          {/* Lighting Rig */}
           <ambientLight intensity={0.4} />
           <directionalLight 
             position={[5, 10, 5]} 
@@ -404,20 +480,22 @@ export default function ModelViewer({ model = 'heart' }) {
             intensity={0.4} 
           />
 
-          {/* Environment reflection map for realistic metallic surfaces */}
           <Environment preset="city" />
 
-          {/* Loader and Model */}
           <Suspense fallback={<CanvasLoader />}>
-            <ModelLoader modelName={model} wireframe={wireframe} />
+            <ModelLoader 
+              modelName={model} 
+              wireframe={wireframe} 
+              originalPositionsRef={originalPositionsRef} 
+              isAnimating={isAnimating}
+            />
           </Suspense>
 
-          {/* Helpers & Controllers */}
           <CameraController resetTrigger={resetTrigger} />
 
           {showGrid && (
             <Grid
-              position={[0, -1.5, 0]}
+              position={[0, -1.8, 0]}
               args={[10, 10]}
               cellSize={0.5}
               cellThickness={0.5}
@@ -436,8 +514,8 @@ export default function ModelViewer({ model = 'heart' }) {
             autoRotateSpeed={1.0}
             enableDamping
             dampingFactor={0.05}
-            minDistance={2}
-            maxDistance={10}
+            minDistance={1.5}
+            maxDistance={8}
           />
         </Canvas>
       </div>
@@ -448,6 +526,43 @@ export default function ModelViewer({ model = 'heart' }) {
         <span className="text-[10px] font-bold text-slate-300 tracking-widest uppercase">
           3D {model} Model
         </span>
+      </div>
+
+      {/* Floating Action control overlay for Explode / Assemble */}
+      <div className="absolute bottom-16 left-4 right-4 md:left-auto md:right-4 flex flex-col md:flex-row items-center gap-3.5 bg-slate-900/85 backdrop-blur-md p-4 rounded-2xl border border-white/5 z-10">
+        <div className="flex items-center gap-2 text-slate-350">
+          <Flame size={14} className="text-primary animate-pulse" />
+          <span className="text-[10px] font-bold tracking-wider uppercase">Exploded View</span>
+        </div>
+        <div className="flex items-center gap-2.5 w-full md:w-auto">
+          <button
+            onClick={handleExplode}
+            className="px-3.5 py-1.5 rounded-xl bg-primary hover:bg-primary-hover text-white text-[10px] font-bold transition-all shadow-md"
+          >
+            Explode
+          </button>
+          <button
+            onClick={handleAssemble}
+            className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold transition-all"
+          >
+            Assemble
+          </button>
+          <div className="flex items-center gap-2 flex-1 md:flex-initial">
+            <input 
+              type="range" 
+              min="0" 
+              max="1" 
+              step="0.01"
+              value={explosionFactor}
+              onChange={(e) => setExplosionFactor(parseFloat(e.target.value))}
+              disabled={isAnimating}
+              className="accent-primary h-1 bg-slate-750 rounded-lg appearance-none cursor-pointer w-24 disabled:opacity-50"
+            />
+            <span className="text-[10px] font-mono font-bold text-slate-400 w-8 text-right">
+              {Math.round(explosionFactor * 100)}%
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Floating Control Toolbar */}
