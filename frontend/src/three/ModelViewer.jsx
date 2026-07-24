@@ -80,8 +80,9 @@ function ModelLoader({ modelName, wireframe }) {
   const modelPath = `/models/${modelName}.glb`;
   const { scene } = useGLTF(modelPath);
   const { camera, controls } = useThree();
-  const { selectedMeshInfo, selectMesh, setAvailableMeshes, explosionFactor } = useSelectedMesh();
+  const { selectedMeshInfo, selectMesh, availableMeshes, setAvailableMeshes, explosionFactor } = useSelectedMesh();
   const originalMaterialsRef = useRef(new Map());
+  const [hasMeshes, setHasMeshes] = useState(true);
 
   // Traverse scene and cache original material variables
   useEffect(() => {
@@ -98,13 +99,12 @@ function ModelLoader({ modelName, wireframe }) {
         child.receiveShadow = true;
         
         // Save clones of color and emissive parameters
-        originalMaterialsRef.current.set(child.uuid, {
-          color: child.material.color.clone(),
-          emissive: child.material.emissive ? child.material.emissive.clone() : new THREE.Color(0, 0, 0),
-          emissiveIntensity: child.material.emissiveIntensity || 0
-        });
-
         if (child.material) {
+          originalMaterialsRef.current.set(child.uuid, {
+            color: child.material.color ? child.material.color.clone() : new THREE.Color(1, 1, 1),
+            emissive: child.material.emissive ? child.material.emissive.clone() : new THREE.Color(0, 0, 0),
+            emissiveIntensity: child.material.emissiveIntensity || 0
+          });
           child.material.wireframe = wireframe;
         }
 
@@ -114,7 +114,9 @@ function ModelLoader({ modelName, wireframe }) {
           if (!child.geometry.boundingBox) {
             child.geometry.computeBoundingBox();
           }
-          child.geometry.boundingBox.getCenter(geomCenter);
+          if (child.geometry.boundingBox) {
+            child.geometry.boundingBox.getCenter(geomCenter);
+          }
         }
         geomCenter.applyMatrix4(child.matrix);
 
@@ -125,6 +127,13 @@ function ModelLoader({ modelName, wireframe }) {
       }
     });
 
+    if (geometryCenters.length === 0) {
+      setHasMeshes(false);
+      return;
+    } else {
+      setHasMeshes(true);
+    }
+
     // Calculate model center in local space by averaging geometry centers
     const localModelCenter = new THREE.Vector3();
     if (geometryCenters.length > 0) {
@@ -134,7 +143,7 @@ function ModelLoader({ modelName, wireframe }) {
 
     // Second pass: calculate directions relative to localModelCenter and store mesh info
     geometryCenters.forEach(({ mesh, geomCenter }) => {
-      const originalPos = mesh.position.clone();
+      const originalPos = mesh.position ? mesh.position.clone() : new THREE.Vector3(0, 0, 0);
       const direction = new THREE.Vector3().subVectors(geomCenter, localModelCenter).normalize();
       
       // Prevent division by zero / overlapping vectors
@@ -151,7 +160,7 @@ function ModelLoader({ modelName, wireframe }) {
       meshesList.push({
         mesh,
         uuid: mesh.uuid,
-        name: mesh.name.replace(/_/g, ' '),
+        name: mesh.name ? mesh.name.replace(/_/g, ' ') : 'Unnamed Structure',
         boundingBox: box,
         center: { x: center.x, y: center.y, z: center.z },
         size: { x: size.x, y: size.y, z: size.z },
@@ -167,10 +176,11 @@ function ModelLoader({ modelName, wireframe }) {
 
   // Listen to explosion factor slider changes
   useEffect(() => {
-    if (!availableMeshes.length) return;
+    if (!availableMeshes || !availableMeshes.length) return;
 
     availableMeshes.forEach((item) => {
       const { mesh, originalPos, direction } = item;
+      if (!mesh || !originalPos || !direction) return;
       
       // Calculate target position based on explosion factor
       const targetPos = originalPos.clone().add(
@@ -187,6 +197,16 @@ function ModelLoader({ modelName, wireframe }) {
       });
     });
   }, [explosionFactor, availableMeshes]);
+
+  if (!hasMeshes) {
+    return (
+      <Html center>
+        <div className="flex flex-col items-center justify-center p-6 bg-slate-900/85 backdrop-blur-md border border-white/10 rounded-2xl shadow-2xl w-48 text-center select-none font-sans">
+          <p className="text-sm font-bold text-red-400">No meshes found</p>
+        </div>
+      </Html>
+    );
+  }
 
   // Handle highlights when selection context updates
   useEffect(() => {
